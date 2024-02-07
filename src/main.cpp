@@ -37,9 +37,26 @@ volatile boolean error = false;
 volatile int16_t numReceived = 0; // todo check int type
 String message;
 
+void handleReceived() {
+  // status change on reception success
+  received = true;
+}
+
+void handleError() {
+  error = true;
+}
+
+void receiver() {
+  DW1000.newReceive();
+  DW1000.setDefaults();
+  // so we don't need to restart the receiver manually
+  DW1000.receivePermanently(true);
+  DW1000.startReceive();
+}
+
 void setup() {
   // DEBUG monitoring
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println(F("### DW1000-arduino-receiver-test ###"));
   // initialize the driver
   DW1000.begin(PIN_IRQ, PIN_RST);
@@ -71,22 +88,7 @@ void setup() {
   receiver();
 }
 
-void handleReceived() {
-  // status change on reception success
-  received = true;
-}
 
-void handleError() {
-  error = true;
-}
-
-void receiver() {
-  DW1000.newReceive();
-  DW1000.setDefaults();
-  // so we don't need to restart the receiver manually
-  DW1000.receivePermanently(true);
-  DW1000.startReceive();
-}
 
 void loop() {
   // enter on confirmation of ISR status change (successfully received)
