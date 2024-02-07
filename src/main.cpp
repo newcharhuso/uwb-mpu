@@ -37,6 +37,25 @@ volatile unsigned long delaySent = 0;
 int16_t sentNum = 0; // todo check int type
 DW1000Time sentTime;
 
+void handleSent() {
+  // status change on sent success
+  sentAck = true;
+}
+
+void transmitter() {
+  // transmit some data
+  Serial.print("Transmitting packet ... #"); Serial.println(sentNum);
+  DW1000.newTransmit();
+  DW1000.setDefaults();
+  String msg = "Hello DW1000, it's #"; msg += sentNum;
+  DW1000.setData(msg);
+  // delay sending the message for the given amount
+  DW1000Time deltaTime = DW1000Time(10, DW1000Time::MILLISECONDS);
+  DW1000.setDelay(deltaTime);
+  DW1000.startTransmit();
+  delaySent = millis();
+}
+
 void setup() {
   // DEBUG monitoring
   Serial.begin(9600);
@@ -67,25 +86,6 @@ void setup() {
   DW1000.attachSentHandler(handleSent);
   // start a transmission
   transmitter();
-}
-
-void handleSent() {
-  // status change on sent success
-  sentAck = true;
-}
-
-void transmitter() {
-  // transmit some data
-  Serial.print("Transmitting packet ... #"); Serial.println(sentNum);
-  DW1000.newTransmit();
-  DW1000.setDefaults();
-  String msg = "Hello DW1000, it's #"; msg += sentNum;
-  DW1000.setData(msg);
-  // delay sending the message for the given amount
-  DW1000Time deltaTime = DW1000Time(10, DW1000Time::MILLISECONDS);
-  DW1000.setDelay(deltaTime);
-  DW1000.startTransmit();
-  delaySent = millis();
 }
 
 void loop() {
