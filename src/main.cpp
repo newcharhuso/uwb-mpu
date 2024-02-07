@@ -1,133 +1,110 @@
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <Wire.h>
+/*
+ * Copyright (c) 2015 by Thomas Trojer <thomas@trojer.net>
+ * Decawave DW1000 library for arduino.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * @file BasicSender.ino
+ * Use this to test simple sender/receiver functionality with two
+ * DW1000. Complements the "BasicReceiver" example sketch. 
+ * 
+ * @todo
+ *  - move strings to flash (less RAM consumption)
+ *  
+ */
+#include <SPI.h>
+#include <DW1000.h>
 
-Adafruit_MPU6050 mpu;
+// connection pins
+const uint8_t PIN_RST = 9; // reset pin
+const uint8_t PIN_IRQ = 2; // irq pin
+const uint8_t PIN_SS = SS; // spi select pin
 
-int firstreading = 1;
-float displacementX = 0, displacementY = 0, displacementZ = 0;
-unsigned long lastUpdateTime = 0; // Track the last update time
-const float accelThreshold = 0.05;
-float offsetX = -0.725, offsetY = -1.415, offsetZ = 0;
-float accelX, accelY,accelZ, gyroXangle, gyroYangle, x, y, z, accelXangle, accelYangle, roll, pitch, yaw;
-float velocityX = 0, velocityY = 0, velocityZ = 0;
-float prevAccelX = 0, prevAccelY = 0, prevAccelZ = 0;
-// Gravity vector
-float gravityX = 0;
-float gravityY = 0;
-float gravityZ = 0;
-float gravity = 9.81; // m/s^2
-const float alpha = 0.90; // Complementary filter coefficient
+// DEBUG packet sent status and count
+boolean sent = false;
+volatile boolean sentAck = false;
+volatile unsigned long delaySent = 0;
+int16_t sentNum = 0; // todo check int type
+DW1000Time sentTime;
 
-#include <Wire.h>
-float RateRoll, RatePitch, RateYaw;
-float AccX, AccY, AccZ;
-float AngleRoll, AnglePitch;
-
-void gyro_signals(void) {
-  Wire.beginTransmission(0x68);
-  Wire.write(0x1A);
-  Wire.write(0x05);
-  Wire.endTransmission();
-  Wire.beginTransmission(0x68);
-  Wire.write(0x1C);
-  Wire.write(0x10);
-  Wire.endTransmission();
-  Wire.beginTransmission(0x68);
-  Wire.write(0x3B);
-  Wire.endTransmission(); 
-  Wire.requestFrom(0x68,6);
-  int16_t AccXLSB = Wire.read() << 8 | Wire.read();
-  int16_t AccYLSB = Wire.read() << 8 | Wire.read();
-  int16_t AccZLSB = Wire.read() << 8 | Wire.read();
-
-  Wire.beginTransmission(0x68);
-  Wire.write(0x1B); 
-  Wire.write(0x8);
-  Wire.endTransmission();                                                   
-  Wire.beginTransmission(0x68);
-  Wire.write(0x43);
-  Wire.endTransmission();
-  Wire.requestFrom(0x68,6);
-
-  int16_t GyroX=Wire.read()<<8 | Wire.read();
-  int16_t GyroY=Wire.read()<<8 | Wire.read();
-  int16_t GyroZ=Wire.read()<<8 | Wire.read();
-
-  RateRoll=(float)GyroX/65.5;
-  RatePitch=(float)GyroY/65.5;
-  RateYaw=(float)GyroZ/65.5;
-  AccX=(float)AccXLSB/4096 - 0.02;
-  AccY=(float)AccYLSB/4096 + 0.02;
-  AccZ=(float)AccZLSB/4096 - 0.04;
-
-}
 void setup() {
-  Serial.begin(115200 );
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
-  Wire.setClock(400000);
-  Wire.begin();
-  delay(250);
-  Wire.beginTransmission(0x68); 
-  Wire.write(0x6B);
-  Wire.write(0x00);
-  Wire.endTransmission();
+  // DEBUG monitoring
+  Serial.begin(9600);
+  Serial.println(F("### DW1000-arduino-sender-test ###"));
+  // initialize the driver
+  DW1000.begin(PIN_IRQ, PIN_RST);
+  DW1000.select(PIN_SS);
+  Serial.println(F("DW1000 initialized ..."));
+  // general configuration
+  DW1000.newConfiguration();
+  DW1000.setDefaults();
+  DW1000.setDeviceAddress(5);
+  DW1000.setNetworkId(10);
+  DW1000.enableMode(DW1000.MODE_LONGDATA_RANGE_LOWPOWER);
+  DW1000.commitConfiguration();
+  Serial.println(F("Committed configuration ..."));
+  // DEBUG chip info and registers pretty printed
+  char msg[128];
+  DW1000.getPrintableDeviceIdentifier(msg);
+  Serial.print("Device ID: "); Serial.println(msg);
+  DW1000.getPrintableExtendedUniqueIdentifier(msg);
+  Serial.print("Unique ID: "); Serial.println(msg);
+  DW1000.getPrintableNetworkIdAndShortAddress(msg);
+  Serial.print("Network ID & Device Address: "); Serial.println(msg);
+  DW1000.getPrintableDeviceMode(msg);
+  Serial.print("Device mode: "); Serial.println(msg);
+  // attach callback for (successfully) sent messages
+  DW1000.attachSentHandler(handleSent);
+  // start a transmission
+  transmitter();
+}
+
+void handleSent() {
+  // status change on sent success
+  sentAck = true;
+}
+
+void transmitter() {
+  // transmit some data
+  Serial.print("Transmitting packet ... #"); Serial.println(sentNum);
+  DW1000.newTransmit();
+  DW1000.setDefaults();
+  String msg = "Hello DW1000, it's #"; msg += sentNum;
+  DW1000.setData(msg);
+  // delay sending the message for the given amount
+  DW1000Time deltaTime = DW1000Time(10, DW1000Time::MILLISECONDS);
+  DW1000.setDelay(deltaTime);
+  DW1000.startTransmit();
+  delaySent = millis();
 }
 
 void loop() {
-  gyro_signals();
-
-  unsigned long currentTime = millis();
-  float timeDiff = (currentTime - lastUpdateTime) / 1000.0;
-
-  accelX = AccX * gravity;
-  accelY = AccY * gravity;
-  accelZ = AccZ * gravity;
-
-  // Apply high-pass filter to remove gravity component
-  if (firstreading == 1){
-	gravityX = accelX;
-	gravityY = accelY;
-	gravityZ = accelZ;
-	firstreading = 0;
+  if (!sentAck) {
+    return;
   }
-  else{
-  gravityX = alpha * gravityX + (1 - alpha) * accelX;
-  gravityY = alpha * gravityY + (1 - alpha) * accelY;
-  gravityZ = alpha * gravityZ + (1 - alpha) * accelZ;
-  }
-  // Subtract gravity component from accelerometer readings
-  accelX -= gravityX;
-  accelY -= gravityY;
-  accelZ -= gravityZ;
-
-  pitch = atan2(-AccX, sqrt(AccY * AccY + AccZ * AccZ)) * 180 / PI;
-  roll = atan2(AccY, AccZ) * 180 / PI;
-  
-  if (abs(accelX) < accelThreshold) accelX = 0;
-  if (abs(accelY) < accelThreshold) accelY = 0;
-  if (abs(accelZ) < accelThreshold) accelZ = 0;
-
-  displacementX += (prevAccelX + accelX) * timeDiff / 2;
-  displacementY += (prevAccelY + accelY) * timeDiff / 2;
-  displacementZ += (prevAccelZ + accelZ) * timeDiff / 2;
-
-  velocityX = (prevAccelX + accelX) / 2;
-  velocityY = (prevAccelX + accelX) / 2; 
-  // Update previous acceleration values
-  prevAccelX = accelX;
-  prevAccelY = accelY;
-
-  lastUpdateTime = currentTime;
-  Serial.print("VelocityX:"); Serial.print(accelX); Serial.print(", ");
-  Serial.print("velocityY:"); Serial.print(velocityY); Serial.println(", ");
-
-  Serial.print("Coordinates : "); Serial.print("X: "); Serial.print(displacementX); Serial.print(" Y: "); Serial.print(displacementY); Serial.print(" Z: "); Serial.println(displacementZ);
-
-  Serial.println("  ");
-  Serial.println("  ");
-  Serial.println("  ");
-  Serial.println("  ");
-  delay(100);
+  // continue on success confirmation
+  // (we are here after the given amount of send delay time has passed)
+  sentAck = false;
+  // update and print some information about the sent message
+  Serial.print("ARDUINO delay sent [ms] ... "); Serial.println(millis() - delaySent);
+  DW1000Time newSentTime;
+  DW1000.getTransmitTimestamp(newSentTime);
+  Serial.print("Processed packet ... #"); Serial.println(sentNum);
+  Serial.print("Sent timestamp ... "); Serial.println(newSentTime.getAsMicroSeconds());
+  // note: delta is just for simple demo as not correct on system time counter wrap-around
+  Serial.print("DW1000 delta send time [ms] ... "); Serial.println((newSentTime.getAsMicroSeconds() - sentTime.getAsMicroSeconds()) * 1.0e-3);
+  sentTime = newSentTime;
+  sentNum++;
+  // again, transmit some data
+  transmitter();
 }
